@@ -795,12 +795,17 @@ async fn get_vmstatus() -> impl Responder {
     log_message("get /vmstatus called.");
 
     let script = r#"
-        $vms = Get-VM |
-        Select-Object Name,State,CPUUsage,MemoryAssigned
+        $vms = Get-VM | Select-Object Name,State,CPUUsage,MemoryAssigned,Id
         if ($vms) {
-            $vms | ConvertTo-Json -Depth 3
+            if ($vms -isnot [array]) { $vms = @($vms) }
+            $vms = $vms | ForEach-Object {
+                $_.Id = $_.Id.Guid.ToString()
+                $_
+            }
+            $jsonOutput = $vms | ConvertTo-Json -Depth 3 -Compress
+            Write-Output "[$jsonOutput]"
         } else {
-            Write-Output "No VMs found."
+            Write-Output "[]"
         }
     "#;
 
@@ -856,13 +861,8 @@ async fn list_isos(data: web::Data<AgentConfig>) -> impl Responder {
                     }
                 }
             }
-            if iso_files.is_empty() {
-                let msg = "No ISO files found.";
-                log_message(msg);
-                HttpResponse::Ok().body(msg)
-            } else {
                 HttpResponse::Ok().json(iso_files)
-            }
+
         }
         Err(e) => {
             let msg = format!("Error reading ISO directory: {}", e);
