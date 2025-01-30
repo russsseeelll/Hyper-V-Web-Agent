@@ -10,6 +10,7 @@ use crossterm::{
     terminal, ExecutableCommand,
 };
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use std::path::Path;
 
 //  writes incoming messages to a local log file
 fn log_message(msg: &str) {
@@ -389,13 +390,15 @@ struct CommandRequest {
 
 // these functions check if user inputs comply with basic patterns and boundaries
 fn validate_vm_name(name: &str) -> Result<(), String> {
+    let name = name.trim();
     let re = Regex::new(r"^[A-Za-z0-9_\-]{1,64}$").unwrap();
     if re.is_match(name) {
         Ok(())
     } else {
-        Err(format!("invalid vm name: {}", name))
+        Err(format!("Invalid VM name: '{}'. Only alphanumeric characters, underscores, and hyphens are allowed (1-64 characters).", name))
     }
 }
+
 
 fn validate_mac_address(mac: &str) -> Result<(), String> {
     let re = Regex::new(r"^[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}$").unwrap();
@@ -417,11 +420,14 @@ fn validate_checkpoint_name(name: &str) -> Result<(), String> {
 
 fn validate_file_path(path: &str) -> Result<(), String> {
     if path.contains('|') || path.is_empty() {
-        return Err(format!("invalid file path: {}", path));
+        return Err(format!("Invalid file path: '{}'. Path cannot contain '|' and cannot be empty.", path));
+    }
+    let p = Path::new(path);
+    if !p.is_absolute() {
+        return Err(format!("File path must be absolute: '{}'.", path));
     }
     Ok(())
 }
-
 fn validate_generation(gen: u8) -> Result<(), String> {
     match gen {
         1 | 2 => Ok(()),
@@ -787,42 +793,52 @@ async fn get_vmstatus() -> impl Responder {
     log_message("get /vmstatus called.");
 
     let script = r#"
-        Get-VM |
-        Select-Object Name,State,CPUUsage,MemoryAssigned |
-        ConvertTo-Json -Depth 3
+        $vms = Get-VM |
+        Select-Object Name,State,CPUUsage,MemoryAssigned
+        if ($vms) {
+            $vms | ConvertTo-Json -Depth 3
+        } else {
+            Write-Output "No VMs found."
+        }
     "#;
 
     match run_powershell(script) {
-        Ok(raw_json) => {
-            match serde_json::from_str::<serde_json::Value>(&raw_json) {
-                Ok(json_val) => HttpResponse::Ok().json(json_val),
-                Err(e) => {
-                    let msg = format!(
-                        "could not parse vm data as json.\nraw output:\n{}\nerror:\n{}",
-                        raw_json, e
-                    );
-                    log_message(&msg);
-                    HttpResponse::Ok().body(msg)
+        Ok(raw_output) => {
+            let trimmed = raw_output.trim();
+            if trimmed == "No VMs found." {
+                HttpResponse::Ok().body(trimmed.to_string())
+            } else {
+                match serde_json::from_str::<serde_json::Value>(trimmed) {
+                    Ok(json_val) => HttpResponse::Ok().json(json_val),
+                    Err(e) => {
+                        let msg = format!(
+                            "Could not parse VM data as JSON.\nRaw output:\n{}\nError:\n{}",
+                            raw_output, e
+                        );
+                        log_message(&msg);
+                        HttpResponse::InternalServerError().body(msg)
+                    }
                 }
             }
         }
         Err(e) => {
-            let msg = format!("error retrieving vm status: {}", e);
+            let msg = format!("Error retrieving VM status: {}", e);
             log_message(&msg);
             HttpResponse::InternalServerError().body(msg)
         }
     }
 }
 
+
 // this endpoint returns a list of iso files from the directory specified in the config
 #[get("/listisos")]
 async fn list_isos(data: web::Data<AgentConfig>) -> impl Responder {
-    log_message("get /listisos called.");
+    log_message("GET /listisos called.");
     let config = data.as_ref();
     let path = std::path::Path::new(&config.iso_directory);
 
     if !path.exists() {
-        let msg = format!("iso directory '{}' does not exist.", &config.iso_directory);
+        let msg = format!("ISO directory '{}' does not exist.", &config.iso_directory);
         log_message(&msg);
         return HttpResponse::BadRequest().body(msg);
     }
@@ -838,10 +854,16 @@ async fn list_isos(data: web::Data<AgentConfig>) -> impl Responder {
                     }
                 }
             }
-            HttpResponse::Ok().json(iso_files)
+            if iso_files.is_empty() {
+                let msg = "No ISO files found.";
+                log_message(msg);
+                HttpResponse::Ok().body(msg)
+            } else {
+                HttpResponse::Ok().json(iso_files)
+            }
         }
         Err(e) => {
-            let msg = format!("error reading iso directory: {}", e);
+            let msg = format!("Error reading ISO directory: {}", e);
             log_message(&msg);
             HttpResponse::InternalServerError().body(msg)
         }
