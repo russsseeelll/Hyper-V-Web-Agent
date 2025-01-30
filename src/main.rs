@@ -9,6 +9,7 @@ use crossterm::{
     event::{read, Event, KeyCode, KeyEvent},
     terminal, ExecutableCommand,
 };
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 
 //  writes incoming messages to a local log file
 fn log_message(msg: &str) {
@@ -27,12 +28,17 @@ fn log_message(msg: &str) {
     }
 }
 
-// this sctruct holds  config information for the agent
+// this struct holds config information for the agent
 #[derive(Debug, Serialize, Deserialize, Clone)]
 struct AgentConfig {
     ethernet_switch: String,
     iso_directory: String,
     default_vhd_directory: String,
+
+    // additional optional fields for port and SSL
+    port: Option<u16>,
+    ssl_certificate_path: Option<String>,
+    ssl_certificate_key_path: Option<String>,
 }
 
 //  helper function determines the path to our json config file
@@ -129,7 +135,7 @@ fn pick_switch_interactively() -> String {
             }
         }
         println!();
-        println!("use up/down arrow keys to select, enter to confirm.");
+        println!("use up/down arrow keys to select, enter to confirm (Esc to default to 'none').");
 
         if let Ok(ev) = read() {
             match ev {
@@ -164,11 +170,29 @@ fn pick_switch_interactively() -> String {
     menu_items[selected_idx].clone()
 }
 
+// this function quickly tests if the provided certificate and key are in acceptable format
+fn test_ssl_files(cert_path: &str, key_path: &str) -> Result<(), String> {
+    let mut builder = SslAcceptor::mozilla_modern(SslMethod::tls())
+        .map_err(|e| format!("error creating ssl acceptor builder: {}", e))?;
+
+    builder
+        .set_private_key_file(key_path, SslFiletype::PEM)
+        .map_err(|e| format!("error setting private key file '{}': {}", key_path, e))?;
+
+    builder
+        .set_certificate_chain_file(cert_path)
+        .map_err(|e| format!("error setting certificate chain file '{}': {}", cert_path, e))?;
+
+    // if we reach here, the key and cert appear to be valid
+    Ok(())
+}
+
 // this function prompts users for settings and then creates a config file
 fn create_config_interactively() -> AgentConfig {
     let chosen_switch = pick_switch_interactively();
 
     let stdin = std::io::stdin();
+
     println!("enter the iso directory path (e.g. c:\\isos):");
     let mut iso_dir = String::new();
     stdin.lock().read_line(&mut iso_dir).unwrap();
@@ -189,10 +213,65 @@ fn create_config_interactively() -> AgentConfig {
         vhd_dir
     };
 
+    // prompt for port number, defaulting if blank or invalid
+    println!("enter the port number to listen on (blank for default 7623):");
+    let mut port_str = String::new();
+    stdin.lock().read_line(&mut port_str).unwrap();
+    let port = if port_str.trim().is_empty() {
+        None
+    } else {
+        match port_str.trim().parse::<u16>() {
+            Ok(parsed_port) => Some(parsed_port),
+            Err(_) => {
+                println!("invalid port specified. defaulting to 7623.");
+                None
+            }
+        }
+    };
+
+    // prompt for optional SSL certificate
+    println!("enter the path to an SSL certificate file (blank to skip):");
+    let mut cert_path_input = String::new();
+    stdin.lock().read_line(&mut cert_path_input).unwrap();
+    let cert_path = cert_path_input.trim().to_string();
+    let cert_path = if cert_path.is_empty() {
+        None
+    } else {
+        Some(cert_path)
+    };
+
+    // prompt for optional SSL private key
+    println!("enter the path to an SSL private key file (blank to skip):");
+    let mut key_path_input = String::new();
+    stdin.lock().read_line(&mut key_path_input).unwrap();
+    let key_path = key_path_input.trim().to_string();
+    let key_path = if key_path.is_empty() {
+        None
+    } else {
+        Some(key_path)
+    };
+
+    // if both are specified, let's do a quick check
+    if let (Some(ref cert), Some(ref key)) = (&cert_path, &key_path) {
+        match test_ssl_files(cert, key) {
+            Ok(_) => {
+                println!("certificate and key appear valid.");
+            }
+            Err(e) => {
+                println!("warning: ssl files appear invalid.\n{}", e);
+                println!("press enter to continue or Ctrl+C to abort...");
+                let _ = std::io::stdin().read_line(&mut String::new());
+            }
+        }
+    }
+
     let config = AgentConfig {
         ethernet_switch: chosen_switch,
         iso_directory: iso_dir.to_string(),
         default_vhd_directory: vhd_dir.to_string(),
+        port,
+        ssl_certificate_path: cert_path,
+        ssl_certificate_key_path: key_path,
     };
 
     save_config(&config);
@@ -809,22 +888,84 @@ async fn main() -> std::io::Result<()> {
 
     let config = load_or_create_config();
 
-    println!("server listening on port 7623. ip: 130.209.253.206");
-    println!(
-        "config loaded or created: agentconfig {{ ethernet_switch: \"{}\", iso_directory: \"{}\" }}",
-        config.ethernet_switch, config.iso_directory
-    );
+    // figure out which port to use
+    let port = config.port.unwrap_or(7623);
 
-    log_message("hyper-v-web-agent starting on port 7623...");
+    // check if SSL certificate and key were specified
+    match (&config.ssl_certificate_path, &config.ssl_certificate_key_path) {
+        (Some(cert_path), Some(key_path)) => {
+            // if both certificate and key are specified, attempt to configure https
+            println!(
+                "attempting to configure https with certificate '{}' and key '{}'",
+                cert_path, key_path
+            );
 
-    HttpServer::new(move || {
-        App::new()
-            .app_data(web::Data::new(config.clone()))
-            .service(execute_command)
-            .service(get_vmstatus)
-            .service(list_isos)
-    })
-        .bind(("0.0.0.0", 7623))?
-        .run()
-        .await
+            let mut builder = match SslAcceptor::mozilla_modern(SslMethod::tls()) {
+                Ok(b) => b,
+                Err(e) => {
+                    eprintln!("error creating SSL acceptor builder: {}", e);
+                    println!("press enter to exit...");
+                    let _ = std::io::stdin().read_line(&mut String::new());
+                    std::process::exit(1);
+                }
+            };
+
+            // attempt to load private key file
+            if let Err(e) = builder.set_private_key_file(key_path, SslFiletype::PEM) {
+                eprintln!("error setting private key file '{}': {}", key_path, e);
+                println!("press enter to exit...");
+                let _ = std::io::stdin().read_line(&mut String::new());
+                std::process::exit(1);
+            }
+
+            // attempt to load certificate chain file
+            if let Err(e) = builder.set_certificate_chain_file(cert_path) {
+                eprintln!("error setting certificate chain file '{}': {}", cert_path, e);
+                println!("press enter to exit...");
+                let _ = std::io::stdin().read_line(&mut String::new());
+                std::process::exit(1);
+            }
+
+            println!("server listening on port {} over https. ip: 130.209.253.206", port);
+            println!(
+                "config loaded or created: agentconfig {{ ethernet_switch: \"{}\", iso_directory: \"{}\" }}",
+                config.ethernet_switch, config.iso_directory
+            );
+
+            log_message("hyper-v-web-agent starting on specified port with SSL...");
+
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(config.clone()))
+                    .service(execute_command)
+                    .service(get_vmstatus)
+                    .service(list_isos)
+            })
+                // do not call builder.build(), actix expects SslAcceptorBuilder here
+                .bind_openssl(("0.0.0.0", port), builder)?
+                .run()
+                .await
+        }
+        _ => {
+            // otherwise, just use normal http
+            println!("server listening on port {} over http. ip: 130.209.253.206", port);
+            println!(
+                "config loaded or created: agentconfig {{ ethernet_switch: \"{}\", iso_directory: \"{}\" }}",
+                config.ethernet_switch, config.iso_directory
+            );
+
+            log_message("hyper-v-web-agent starting on specified port (no SSL)...");
+
+            HttpServer::new(move || {
+                App::new()
+                    .app_data(web::Data::new(config.clone()))
+                    .service(execute_command)
+                    .service(get_vmstatus)
+                    .service(list_isos)
+            })
+                .bind(("0.0.0.0", port))?
+                .run()
+                .await
+        }
+    }
 }
