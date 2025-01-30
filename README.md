@@ -17,6 +17,8 @@ A Rust-based connector to remotely manage Microsoft Hyper-V servers. This agent 
     - On first run, the agent prompts you to select a Hyper-V switch from a text-based menu (or choose “none”) and specify two directories:
         - **ISO directory** for storing `.iso` files.
         - **VHDX directory** for creating new virtual disks by default.
+        - Optionally set a **custom port** (defaults to 7623).
+        - Optionally specify an **SSL certificate** and **private key** (PEM format) if you’d like HTTPS. If both paths are valid, the agent will listen over HTTPS on the chosen port. If either file is invalid or unreadable, you’ll see a warning or error, and the agent won’t start until corrected.
     - It then writes a JSON file named `hyperv_agent_config.json` to the same folder as the agent executable, storing these preferences.
 
 3. **Endpoints**: The agent listens on port `7623` by default, exposing three endpoints:
@@ -34,8 +36,8 @@ A Rust-based connector to remotely manage Microsoft Hyper-V servers. This agent 
 `hyperv_agent.exe`
 
 3. **Answer** the prompts on first run (choose your virtual switch, ISO directory, and VHDX directory).
-4. The agent then listens on `0.0.0.0:7623` (or a configured IP:port if you changed it).
-5. **Use cURL** or any HTTP client to send JSON requests to `http://<SERVER_URL>:7623`.
+4. If no SSL cert/key is provided, the agent listens over HTTP on 0.0.0.0:<port>. If valid cert/key paths are provided, it listens over HTTPS on the same port.
+5. **Use cURL** or any HTTP client to send JSON requests to `http://<SERVER_URL>:<port>`.
 
 Example: Creating a VM named `testvm` with 4 GB of RAM, generation 2, 2 CPU cores, and a new VHDX of 20 GB in the default directory:
 
