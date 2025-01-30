@@ -1,4 +1,5 @@
 use actix_web::{get, post, web, App, HttpResponse, HttpServer, Responder};
+use actix_cors::Cors;
 use serde::{Deserialize, Serialize};
 use regex::Regex;
 use std::io::{Write, BufRead};
@@ -11,6 +12,7 @@ use crossterm::{
 };
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use std::path::Path;
+
 
 //  writes incoming messages to a local log file
 fn log_message(msg: &str) {
@@ -909,14 +911,10 @@ async fn main() -> std::io::Result<()> {
     }
 
     let config = load_or_create_config();
-
-    // figure out which port to use
     let port = config.port.unwrap_or(7623);
 
-    // check if SSL certificate and key were specified
     match (&config.ssl_certificate_path, &config.ssl_certificate_key_path) {
         (Some(cert_path), Some(key_path)) => {
-            // if both certificate and key are specified, attempt to configure https
             println!(
                 "attempting to configure https with certificate '{}' and key '{}'",
                 cert_path, key_path
@@ -932,7 +930,6 @@ async fn main() -> std::io::Result<()> {
                 }
             };
 
-            // attempt to load private key file
             if let Err(e) = builder.set_private_key_file(key_path, SslFiletype::PEM) {
                 eprintln!("error setting private key file '{}': {}", key_path, e);
                 println!("press enter to exit...");
@@ -940,7 +937,6 @@ async fn main() -> std::io::Result<()> {
                 std::process::exit(1);
             }
 
-            // attempt to load certificate chain file
             if let Err(e) = builder.set_certificate_chain_file(cert_path) {
                 eprintln!("error setting certificate chain file '{}': {}", cert_path, e);
                 println!("press enter to exit...");
@@ -958,18 +954,23 @@ async fn main() -> std::io::Result<()> {
 
             HttpServer::new(move || {
                 App::new()
+                    .wrap(
+                        Cors::default()
+                            .allow_any_origin()
+                            .allow_any_method()
+                            .allow_any_header()
+                            .max_age(3600)
+                    )
                     .app_data(web::Data::new(config.clone()))
                     .service(execute_command)
                     .service(get_vmstatus)
                     .service(list_isos)
             })
-                // do not call builder.build(), actix expects SslAcceptorBuilder here
                 .bind_openssl(("0.0.0.0", port), builder)?
                 .run()
                 .await
         }
         _ => {
-            // otherwise, just use normal http
             println!("server listening on port {} over http. ip: 130.209.253.206", port);
             println!(
                 "config loaded or created: agentconfig {{ ethernet_switch: \"{}\", iso_directory: \"{}\" }}",
@@ -980,6 +981,13 @@ async fn main() -> std::io::Result<()> {
 
             HttpServer::new(move || {
                 App::new()
+                    .wrap(
+                        Cors::default()
+                            .allow_any_origin()
+                            .allow_any_method()
+                            .allow_any_header()
+                            .max_age(3600)
+                    )
                     .app_data(web::Data::new(config.clone()))
                     .service(execute_command)
                     .service(get_vmstatus)
