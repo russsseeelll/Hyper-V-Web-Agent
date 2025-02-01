@@ -4,11 +4,15 @@ use crate::commands::HyperVCommand;
 
 pub fn validate_vm_name(name: &str) -> Result<(), String> {
     let name = name.trim();
-    let re = Regex::new(r"^[A-Za-z0-9_\-]{1,64}$").unwrap();
+    // Updated regex to allow spaces in addition to alphanumeric characters, underscores, and hyphens.
+    let re = Regex::new(r"^[A-Za-z0-9 _-]{1,64}$").unwrap();
     if re.is_match(name) {
         Ok(())
     } else {
-        Err(format!("Invalid VM name: '{}'. Only alphanumeric characters, underscores, and hyphens are allowed (1-64 characters).", name))
+        Err(format!(
+            "Invalid VM name: '{}'. Only alphanumeric characters, spaces, underscores, and hyphens are allowed (1-64 characters).",
+            name
+        ))
     }
 }
 
