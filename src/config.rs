@@ -1,3 +1,4 @@
+// config.rs
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
@@ -247,14 +248,10 @@ pub fn create_config_interactively() -> AgentConfig {
             }
             hosts.push(host);
         }
-        if hosts.is_empty() {
-            println!("Error: You must specify at least one allowed host.");
-            std::process::exit(1);
-        }
         hosts
     } else {
-        println!("Error: API access must be restricted to specific hosts for security reasons.");
-        std::process::exit(1);
+        // If the user chooses not to restrict API access, leave allowed_hosts empty to allow all.
+        Vec::new()
     };
 
     let config = AgentConfig {

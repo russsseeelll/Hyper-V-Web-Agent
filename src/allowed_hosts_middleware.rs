@@ -1,3 +1,4 @@
+// allowed_hosts_middleware.rs
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpResponse};
 use actix_web::body::{BoxBody, EitherBody};
@@ -49,20 +50,25 @@ where
     }
 
     fn call(&self, req: ServiceRequest) -> Self::Future {
-        // check the allowed hosts using the client's remote IP address.
+        if self.allowed_hosts.is_empty() {
+            let fut = self.service.call(req);
+            return Box::pin(async move {
+                let res = fut.await?;
+                Ok(res)
+            });
+        }
+
         let peer_addr = req.peer_addr();
         if let Some(peer_addr) = peer_addr {
             let client_ip = peer_addr.ip();
             let mut allowed = false;
             for host in &self.allowed_hosts {
-                // if the host parses as an ip address, compare directly
                 if let Ok(ip) = host.parse::<IpAddr>() {
                     if ip == client_ip {
                         allowed = true;
                         break;
                     }
                 } else {
-                    // otherwise, attempt DNS resolution with a dummy port.
                     let addr_str = format!("{}:80", host);
                     if let Ok(addrs) = addr_str.to_socket_addrs() {
                         for addr in addrs {
