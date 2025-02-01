@@ -77,12 +77,8 @@ pub fn running_as_admin() -> bool {
     false
 }
 
-/// Prompt the user to select a hyper-v switch without clearing the screen.
-/// Lists the available switches with numbers and asks the user to enter the corresponding number.
-/// If no switches are available, returns "none".
 fn pick_switch_interactively() -> String {
     let mut switches = get_hyperv_switch_names();
-    // Always allow the user to choose "none".
     switches.insert(0, "none".to_string());
 
     println!("Available hyper-v switches:");

@@ -1,4 +1,6 @@
+// api.rs
 use actix_web::{get, post, web, HttpResponse, Responder};
+use serde_json;
 use crate::commands::{CommandRequest, HyperVCommand};
 use crate::config::AgentConfig;
 use crate::logging::log_message;
@@ -31,12 +33,10 @@ async fn execute_command(
             vhd_path,
             vhd_size_bytes,
         } => {
-            // Quote the VM name in all parameters.
             let create_cmd = format!(
                 "New-VM -Name \"{}\" -MemoryStartupBytes {} -Generation {}",
                 vm_name, memory_bytes, generation
             );
-
             let connect_cmd = if config.ethernet_switch.to_lowercase() != "none" {
                 format!(
                     "Connect-VMNetworkAdapter -VMName \"{}\" -SwitchName '{}'",
@@ -45,7 +45,6 @@ async fn execute_command(
             } else {
                 "".to_string()
             };
-
             let cpu_cmd = if let Some(c) = cpu_count {
                 if *c > 1 {
                     format!("Set-VMProcessor -VMName \"{}\" -Count {}", vm_name, c)
@@ -55,15 +54,11 @@ async fn execute_command(
             } else {
                 "".to_string()
             };
-
-            // Compute final VHD path; if not provided, use default directory and VM name.
             let final_vhd_path = if let Some(ref path) = vhd_path {
                 path.clone()
             } else {
                 format!("{}\\{}.vhdx", config.default_vhd_directory, vm_name)
             };
-
-            // Wrap file paths in quotes.
             let disk_create_cmd = format!(
                 "New-VHD -Path \"{}\" -SizeBytes {} -Dynamic",
                 final_vhd_path, vhd_size_bytes
@@ -72,7 +67,6 @@ async fn execute_command(
                 "Add-VMHardDiskDrive -VMName \"{}\" -Path \"{}\"",
                 vm_name, final_vhd_path
             );
-
             let full_script = format!(
                 "{create}; {connect}; {cpu}; {disk_create}; {disk_attach};",
                 create = create_cmd,
@@ -81,7 +75,6 @@ async fn execute_command(
                 disk_create = disk_create_cmd,
                 disk_attach = disk_attach_cmd
             );
-
             run_powershell(&full_script)
         }
         HyperVCommand::SetVmProcessor { vm_name, cpu_count } => run_powershell(&format!(
@@ -255,6 +248,44 @@ async fn get_vmstatus() -> impl Responder {
     }
 }
 
+#[get("/vminfo")]
+async fn vminfo() -> impl Responder {
+    log_message("get /vminfo called.");
+
+    let script = r#"
+        $vms = Get-VM
+        if ($vms) {
+            if ($vms -isnot [array]) { $vms = @($vms) }
+            $jsonOutput = $vms | ConvertTo-Json -Depth 5 -Compress
+            Write-Output $jsonOutput
+        } else {
+            Write-Output "[]"
+        }
+    "#;
+
+    match run_powershell(script) {
+        Ok(raw_output) => {
+            let trimmed = raw_output.trim();
+            match serde_json::from_str::<serde_json::Value>(trimmed) {
+                Ok(json_val) => HttpResponse::Ok().json(json_val),
+                Err(e) => {
+                    let msg = format!(
+                        "Could not parse VM info data as JSON.\nRaw output:\n{}\nError:\n{}",
+                        raw_output, e
+                    );
+                    log_message(&msg);
+                    HttpResponse::InternalServerError().body(msg)
+                }
+            }
+        }
+        Err(e) => {
+            let msg = format!("Error retrieving VM info: {}", e);
+            log_message(&msg);
+            HttpResponse::InternalServerError().body(msg)
+        }
+    }
+}
+
 #[get("/listisos")]
 async fn list_isos(data: web::Data<crate::config::AgentConfig>) -> impl Responder {
     log_message("GET /listisos called.");
@@ -288,9 +319,10 @@ async fn list_isos(data: web::Data<crate::config::AgentConfig>) -> impl Responde
     }
 }
 
-/// configure all routes for the application.
+/// Configure all routes for the application.
 pub fn init_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(execute_command);
     cfg.service(get_vmstatus);
+    cfg.service(vminfo);
     cfg.service(list_isos);
 }
