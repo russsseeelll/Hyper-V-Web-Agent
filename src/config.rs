@@ -2,13 +2,7 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::process::Command;
-use std::io::BufRead;
-use crossterm::{
-    cursor,
-    event::{read, Event, KeyCode, KeyEvent},
-    terminal,
-    ExecutableCommand,
-};
+use std::io::{self, BufRead, Write};
 use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
 use crate::logging::log_message;
 use crate::powershell::run_powershell;
@@ -83,64 +77,36 @@ pub fn running_as_admin() -> bool {
     false
 }
 
+/// Prompt the user to select a hyper-v switch without clearing the screen.
+/// Lists the available switches with numbers and asks the user to enter the corresponding number.
+/// If no switches are available, returns "none".
 fn pick_switch_interactively() -> String {
-    let switches = get_hyperv_switch_names();
-    let mut menu_items = Vec::new();
-    if switches.is_empty() {
-        println!("No vswitches detected (or insufficient privileges). Defaulting to 'none'.");
+    let mut switches = get_hyperv_switch_names();
+    // Always allow the user to choose "none".
+    switches.insert(0, "none".to_string());
+
+    println!("Available hyper-v switches:");
+    for (i, switch) in switches.iter().enumerate() {
+        println!("  {}: {}", i, switch);
+    }
+    print!("Enter the number corresponding to your desired network adapter [default 0]: ");
+    io::stdout().flush().unwrap();
+
+    let mut input = String::new();
+    let stdin = io::stdin();
+    stdin.lock().read_line(&mut input).unwrap();
+    let input = input.trim();
+
+    if input.is_empty() {
         return "none".to_string();
     }
-    menu_items.push("none".to_string());
-    menu_items.extend(switches);
-
-    let mut selected_idx: usize = 0;
-    let _ = std::io::stdout().execute(terminal::EnterAlternateScreen);
-    let _ = terminal::enable_raw_mode();
-
-    loop {
-        let _ = std::io::stdout().execute(terminal::Clear(terminal::ClearType::All));
-        let _ = std::io::stdout().execute(cursor::MoveTo(0, 0));
-
-        println!("Available hyper-v switches:");
-        for (i, item) in menu_items.iter().enumerate() {
-            if i == selected_idx {
-                println!("  > {}", item);
-            } else {
-                println!("    {}", item);
-            }
-        }
-        println!();
-        println!("Use up/down arrow keys to select, enter to confirm (esc to default to 'none').");
-
-        if let Ok(ev) = read() {
-            match ev {
-                Event::Key(KeyEvent { code, .. }) => match code {
-                    KeyCode::Up => {
-                        if selected_idx > 0 {
-                            selected_idx -= 1;
-                        }
-                    }
-                    KeyCode::Down => {
-                        if selected_idx < menu_items.len() - 1 {
-                            selected_idx += 1;
-                        }
-                    }
-                    KeyCode::Enter => break,
-                    KeyCode::Esc => {
-                        selected_idx = 0;
-                        break;
-                    }
-                    _ => {}
-                },
-                _ => {}
-            }
+    match input.parse::<usize>() {
+        Ok(index) if index < switches.len() => switches[index].clone(),
+        _ => {
+            println!("Invalid selection. Defaulting to 'none'.");
+            "none".to_string()
         }
     }
-
-    let _ = terminal::disable_raw_mode();
-    let _ = std::io::stdout().execute(terminal::LeaveAlternateScreen);
-
-    menu_items[selected_idx].clone()
 }
 
 fn test_ssl_files(cert_path: &str, key_path: &str) -> Result<(), String> {
@@ -159,28 +125,24 @@ fn test_ssl_files(cert_path: &str, key_path: &str) -> Result<(), String> {
 }
 
 pub fn create_config_interactively() -> AgentConfig {
-    let chosen_switch = pick_switch_interactively();
-
-    let stdin = std::io::stdin();
+    let stdin = io::stdin();
 
     println!("Enter the ISO directory path (e.g. c:\\isos):");
     let mut iso_dir = String::new();
     stdin.lock().read_line(&mut iso_dir).unwrap();
-    let iso_dir = iso_dir.trim();
-    let iso_dir = if iso_dir.is_empty() {
-        "C:\\ISOs"
+    let iso_dir = if iso_dir.trim().is_empty() {
+        "C:\\ISOs".to_string()
     } else {
-        iso_dir
+        iso_dir.trim().to_string()
     };
 
     println!("Enter the default VHDX directory (e.g. c:\\vms):");
     let mut vhd_dir = String::new();
     stdin.lock().read_line(&mut vhd_dir).unwrap();
-    let vhd_dir = vhd_dir.trim();
-    let vhd_dir = if vhd_dir.is_empty() {
-        "C:\\VMs"
+    let vhd_dir = if vhd_dir.trim().is_empty() {
+        "C:\\VMs".to_string()
     } else {
-        vhd_dir
+        vhd_dir.trim().to_string()
     };
 
     println!("Enter the port number to listen on (blank for default 7623):");
@@ -201,21 +163,19 @@ pub fn create_config_interactively() -> AgentConfig {
     println!("Enter the path to an SSL certificate file (blank to skip):");
     let mut cert_path_input = String::new();
     stdin.lock().read_line(&mut cert_path_input).unwrap();
-    let cert_path = cert_path_input.trim().to_string();
-    let cert_path = if cert_path.is_empty() {
+    let cert_path = if cert_path_input.trim().is_empty() {
         None
     } else {
-        Some(cert_path)
+        Some(cert_path_input.trim().to_string())
     };
 
     println!("Enter the path to an SSL private key file (blank to skip):");
     let mut key_path_input = String::new();
     stdin.lock().read_line(&mut key_path_input).unwrap();
-    let key_path = key_path_input.trim().to_string();
-    let key_path = if key_path.is_empty() {
+    let key_path = if key_path_input.trim().is_empty() {
         None
     } else {
-        Some(key_path)
+        Some(key_path_input.trim().to_string())
     };
 
     if let (Some(ref cert), Some(ref key)) = (&cert_path, &key_path) {
@@ -226,46 +186,56 @@ pub fn create_config_interactively() -> AgentConfig {
             Err(e) => {
                 println!("Warning: SSL files appear invalid.\n{}", e);
                 println!("Press enter to continue or Ctrl+C to abort...");
-                let _ = std::io::stdin().read_line(&mut String::new());
+                let _ = io::stdin().read_line(&mut String::new());
             }
         }
     }
 
     // Ask if the user wants to restrict API access to specific hosts.
-    println!("Do you want to restrict API access to specific hosts? (y/n):");
-    let mut restrict_choice = String::new();
-    stdin.lock().read_line(&mut restrict_choice).unwrap();
-    let restrict_choice = restrict_choice.trim().to_lowercase();
-    let allowed_hosts = if restrict_choice == "y" || restrict_choice == "yes" {
-        println!("Enter allowed hosts (DNS names or IP addresses), one per line. Enter an empty line to finish:");
-        let mut hosts = Vec::new();
-        loop {
-            let mut host = String::new();
-            stdin.lock().read_line(&mut host).unwrap();
-            let host = host.trim().to_string();
-            if host.is_empty() {
-                break;
-            }
-            hosts.push(host);
+    loop {
+        print!("Do you want to restrict API access to specific hosts? (y/n): ");
+        io::stdout().flush().unwrap();
+        let mut restrict_choice = String::new();
+        stdin.lock().read_line(&mut restrict_choice).unwrap();
+        let restrict_choice = restrict_choice.trim().to_lowercase();
+        if restrict_choice == "y" || restrict_choice == "yes" || restrict_choice == "n" || restrict_choice == "no" {
+            // If "y"/"yes", ask for allowed hosts; if "n"/"no", leave empty.
+            let allowed_hosts = if restrict_choice == "y" || restrict_choice == "yes" {
+                println!("Enter allowed hosts (DNS names or IP addresses), one per line. Enter an empty line to finish:");
+                let mut hosts = Vec::new();
+                loop {
+                    let mut host = String::new();
+                    stdin.lock().read_line(&mut host).unwrap();
+                    let host = host.trim().to_string();
+                    if host.is_empty() {
+                        break;
+                    }
+                    hosts.push(host);
+                }
+                hosts
+            } else {
+                Vec::new()
+            };
+
+            // Now ask for the hyper-v switch selection.
+            let chosen_switch = pick_switch_interactively();
+
+            let config = AgentConfig {
+                ethernet_switch: chosen_switch,
+                iso_directory: iso_dir,
+                default_vhd_directory: vhd_dir,
+                port,
+                ssl_certificate_path: cert_path,
+                ssl_certificate_key_path: key_path,
+                allowed_hosts,
+            };
+
+            save_config(&config);
+            return config;
+        } else {
+            println!("Invalid input. Please enter 'y' or 'n'.");
         }
-        hosts
-    } else {
-        // If the user chooses not to restrict API access, leave allowed_hosts empty to allow all.
-        Vec::new()
-    };
-
-    let config = AgentConfig {
-        ethernet_switch: chosen_switch,
-        iso_directory: iso_dir.to_string(),
-        default_vhd_directory: vhd_dir.to_string(),
-        port,
-        ssl_certificate_path: cert_path,
-        ssl_certificate_key_path: key_path,
-        allowed_hosts,
-    };
-
-    save_config(&config);
-    config
+    }
 }
 
 pub fn save_config(cfg: &AgentConfig) {
