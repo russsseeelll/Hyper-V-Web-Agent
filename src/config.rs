@@ -1,13 +1,15 @@
-// config.rs
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
-use std::process::Command;
-use std::io::{self, BufRead, Write};
-use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+// this file handles the config for the agent.
+
 use crate::logging::log_message;
 use crate::powershell::run_powershell;
+use openssl::ssl::{SslAcceptor, SslFiletype, SslMethod};
+use serde::{Deserialize, Serialize};
+use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
+use std::process::Command;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
+// the config struct stores configuration options that the agent reads
 pub struct AgentConfig {
     pub ethernet_switch: String,
     pub iso_directory: String,
@@ -18,6 +20,7 @@ pub struct AgentConfig {
     pub allowed_hosts: Vec<String>,
 }
 
+// returns the file path for the config
 fn config_file_path() -> PathBuf {
     let mut path = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("."));
     path.pop();
@@ -25,6 +28,7 @@ fn config_file_path() -> PathBuf {
     path
 }
 
+// loads the config from the file if it exists, or creates one if not
 pub fn load_or_create_config() -> AgentConfig {
     let path = config_file_path();
     if path.exists() {
@@ -33,38 +37,38 @@ pub fn load_or_create_config() -> AgentConfig {
                 if let Ok(cfg) = serde_json::from_str::<AgentConfig>(&content) {
                     cfg
                 } else {
-                    println!("Config file is corrupt. Recreating...");
+                    println!("config file is corrupt. recreating...");
                     create_config_interactively()
                 }
             }
             Err(_) => {
-                println!("Unable to read config file. Recreating...");
+                println!("unable to read config file. recreating...");
                 create_config_interactively()
             }
         }
     } else {
-        println!("No config file found. Let's create one...");
+        println!("no config file found. let's create one...");
         create_config_interactively()
     }
 }
 
+// runs a powershell script to get the list of switch names. returns a vector of switch names
 fn get_hyperv_switch_names() -> Vec<String> {
     let script = r#"Get-VMSwitch | Select-Object -ExpandProperty Name"#;
     match run_powershell(script) {
-        Ok(output) => {
-            output
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty())
-                .collect()
-        }
+        Ok(output) => output
+            .lines()
+            .map(|l| l.trim().to_string())
+            .filter(|l| !l.is_empty())
+            .collect(),
         Err(_) => {
-            println!("Could not list vswitches (are you running as administrator?).");
+            println!("could not list vswitches (are you running as administrator?).");
             Vec::new()
         }
     }
 }
 
+// checks if the process is running with admin privileges
 pub fn running_as_admin() -> bool {
     if let Ok(output) = Command::new("powershell.exe")
         .arg("-Command")
@@ -77,15 +81,16 @@ pub fn running_as_admin() -> bool {
     false
 }
 
+// allows the user to pick a switch  from the list of availible ones
 fn pick_switch_interactively() -> String {
     let mut switches = get_hyperv_switch_names();
     switches.insert(0, "none".to_string());
 
-    println!("Available hyper-v switches:");
+    println!("available hyper-v switches:");
     for (i, switch) in switches.iter().enumerate() {
         println!("  {}: {}", i, switch);
     }
-    print!("Enter the number corresponding to your desired network adapter [default 0]: ");
+    print!("enter the number corresponding to your desired network adapter [default 0]: ");
     io::stdout().flush().unwrap();
 
     let mut input = String::new();
@@ -99,31 +104,36 @@ fn pick_switch_interactively() -> String {
     match input.parse::<usize>() {
         Ok(index) if index < switches.len() => switches[index].clone(),
         _ => {
-            println!("Invalid selection. Defaulting to 'none'.");
+            println!("invalid selection. defaulting to 'none'.");
             "none".to_string()
         }
     }
 }
 
+// tests the provided ssl certificate and key files to make sure theyre valid
 fn test_ssl_files(cert_path: &str, key_path: &str) -> Result<(), String> {
     let mut builder = SslAcceptor::mozilla_modern(SslMethod::tls())
-        .map_err(|e| format!("Error creating SSL acceptor builder: {}", e))?;
+        .map_err(|e| format!("error creating ssl acceptor builder: {}", e))?;
 
     builder
         .set_private_key_file(key_path, SslFiletype::PEM)
-        .map_err(|e| format!("Error setting private key file '{}': {}", key_path, e))?;
+        .map_err(|e| format!("error setting private key file '{}': {}", key_path, e))?;
 
-    builder
-        .set_certificate_chain_file(cert_path)
-        .map_err(|e| format!("Error setting certificate chain file '{}': {}", cert_path, e))?;
+    builder.set_certificate_chain_file(cert_path).map_err(|e| {
+        format!(
+            "error setting certificate chain file '{}': {}",
+            cert_path, e
+        )
+    })?;
 
     Ok(())
 }
 
+// interactively creates a new config
 pub fn create_config_interactively() -> AgentConfig {
     let stdin = io::stdin();
 
-    println!("Enter the ISO directory path (e.g. c:\\isos):");
+    println!("enter the iso directory path (e.g. c:\\isos):");
     let mut iso_dir = String::new();
     stdin.lock().read_line(&mut iso_dir).unwrap();
     let iso_dir = if iso_dir.trim().is_empty() {
@@ -132,7 +142,7 @@ pub fn create_config_interactively() -> AgentConfig {
         iso_dir.trim().to_string()
     };
 
-    println!("Enter the default VHDX directory (e.g. c:\\vms):");
+    println!("enter the default vhdx directory (e.g. c:\\vms):");
     let mut vhd_dir = String::new();
     stdin.lock().read_line(&mut vhd_dir).unwrap();
     let vhd_dir = if vhd_dir.trim().is_empty() {
@@ -141,7 +151,7 @@ pub fn create_config_interactively() -> AgentConfig {
         vhd_dir.trim().to_string()
     };
 
-    println!("Enter the port number to listen on (blank for default 7623):");
+    println!("enter the port number to listen on (blank for default 7623):");
     let mut port_str = String::new();
     stdin.lock().read_line(&mut port_str).unwrap();
     let port = if port_str.trim().is_empty() {
@@ -150,13 +160,13 @@ pub fn create_config_interactively() -> AgentConfig {
         match port_str.trim().parse::<u16>() {
             Ok(parsed_port) => Some(parsed_port),
             Err(_) => {
-                println!("Invalid port specified. Defaulting to 7623.");
+                println!("invalid port specified. defaulting to 7623.");
                 None
             }
         }
     };
 
-    println!("Enter the path to an SSL certificate file (blank to skip):");
+    println!("enter the path to an ssl certificate file (blank to skip):");
     let mut cert_path_input = String::new();
     stdin.lock().read_line(&mut cert_path_input).unwrap();
     let cert_path = if cert_path_input.trim().is_empty() {
@@ -165,7 +175,7 @@ pub fn create_config_interactively() -> AgentConfig {
         Some(cert_path_input.trim().to_string())
     };
 
-    println!("Enter the path to an SSL private key file (blank to skip):");
+    println!("enter the path to an ssl private key file (blank to skip):");
     let mut key_path_input = String::new();
     stdin.lock().read_line(&mut key_path_input).unwrap();
     let key_path = if key_path_input.trim().is_empty() {
@@ -177,27 +187,30 @@ pub fn create_config_interactively() -> AgentConfig {
     if let (Some(ref cert), Some(ref key)) = (&cert_path, &key_path) {
         match test_ssl_files(cert, key) {
             Ok(_) => {
-                println!("Certificate and key appear valid.");
+                println!("certificate and key appear valid.");
             }
             Err(e) => {
-                println!("Warning: SSL files appear invalid.\n{}", e);
-                println!("Press enter to continue or Ctrl+C to abort...");
+                println!("warning: ssl files appear invalid.\n{}", e);
+                println!("press enter to continue or ctrl+c to abort...");
                 let _ = io::stdin().read_line(&mut String::new());
             }
         }
     }
 
-    // Ask if the user wants to restrict API access to specific hosts.
+    // ask if the user wants to restrict api access to specific hosts
     loop {
-        print!("Do you want to restrict API access to specific hosts? (y/n): ");
+        print!("do you want to restrict api access to specific hosts? (y/n): ");
         io::stdout().flush().unwrap();
         let mut restrict_choice = String::new();
         stdin.lock().read_line(&mut restrict_choice).unwrap();
         let restrict_choice = restrict_choice.trim().to_lowercase();
-        if restrict_choice == "y" || restrict_choice == "yes" || restrict_choice == "n" || restrict_choice == "no" {
-            // If "y"/"yes", ask for allowed hosts; if "n"/"no", leave empty.
+        if restrict_choice == "y"
+            || restrict_choice == "yes"
+            || restrict_choice == "n"
+            || restrict_choice == "no"
+        {
             let allowed_hosts = if restrict_choice == "y" || restrict_choice == "yes" {
-                println!("Enter allowed hosts (DNS names or IP addresses), one per line. Enter an empty line to finish:");
+                println!("enter allowed hosts (dns names or ip addresses), one per line. enter an empty line to finish:");
                 let mut hosts = Vec::new();
                 loop {
                     let mut host = String::new();
@@ -213,7 +226,7 @@ pub fn create_config_interactively() -> AgentConfig {
                 Vec::new()
             };
 
-            // Now ask for the hyper-v switch selection.
+            // ask the user to pick a hyper-v switch.
             let chosen_switch = pick_switch_interactively();
 
             let config = AgentConfig {
@@ -229,16 +242,17 @@ pub fn create_config_interactively() -> AgentConfig {
             save_config(&config);
             return config;
         } else {
-            println!("Invalid input. Please enter 'y' or 'n'.");
+            println!("invalid input. please enter 'y' or 'n'.");
         }
     }
 }
 
+// saves the provided configuration to a file in json format.
 pub fn save_config(cfg: &AgentConfig) {
     let path = config_file_path();
     let json_str = serde_json::to_string_pretty(cfg).unwrap();
     let _ = std::fs::write(&path, json_str);
 
-    println!("Created config file at \"{}\"", path.display());
-    log_message(&format!("Created config file at \"{}\"", path.display()));
+    println!("created config file at \"{}\"", path.display());
+    log_message(&format!("created config file at \"{}\"", path.display()));
 }

@@ -1,21 +1,26 @@
+// this file contains helper functions to validate various inputs for hyper-v commands,
+// such as vm names, mac addresses, file paths, memory sizes, etc.
+
 use regex::Regex;
 use std::path::Path;
 use crate::commands::HyperVCommand;
 
+// checks that the vm name is between 1 and 64 characters and contains only allowed characters.
 pub fn validate_vm_name(name: &str) -> Result<(), String> {
     let name = name.trim();
-    // Updated regex to allow spaces in addition to alphanumeric characters, underscores, and hyphens.
+    // updated regex to allow spaces in addition to alphanumeric characters, underscores, and hyphens.
     let re = Regex::new(r"^[A-Za-z0-9 _-]{1,64}$").unwrap();
     if re.is_match(name) {
         Ok(())
     } else {
         Err(format!(
-            "Invalid VM name: '{}'. Only alphanumeric characters, spaces, underscores, and hyphens are allowed (1-64 characters).",
+            "invalid vm name: '{}'. only alphanumeric characters, spaces, underscores, and hyphens are allowed (1-64 characters).",
             name
         ))
     }
 }
 
+// checks that the mac address is in a valid format (xx-xx-xx-xx-xx-xx).
 pub fn validate_mac_address(mac: &str) -> Result<(), String> {
     let re = Regex::new(r"^[0-9A-Fa-f]{2}(-[0-9A-Fa-f]{2}){5}$").unwrap();
     if re.is_match(mac) {
@@ -25,6 +30,7 @@ pub fn validate_mac_address(mac: &str) -> Result<(), String> {
     }
 }
 
+// checks that the checkpoint name is between 1 and 64 characters and uses allowed characters.
 pub fn validate_checkpoint_name(name: &str) -> Result<(), String> {
     let re = Regex::new(r"^[A-Za-z0-9_\-]{1,64}$").unwrap();
     if re.is_match(name) {
@@ -34,17 +40,19 @@ pub fn validate_checkpoint_name(name: &str) -> Result<(), String> {
     }
 }
 
+// validates that the file path is absolute and does not contain forbidden characters.
 pub fn validate_file_path(path: &str) -> Result<(), String> {
     if path.contains('|') || path.is_empty() {
-        return Err(format!("Invalid file path: '{}'. Path cannot contain '|' and cannot be empty.", path));
+        return Err(format!("invalid file path: '{}'. path cannot contain '|' and cannot be empty.", path));
     }
     let p = Path::new(path);
     if !p.is_absolute() {
-        return Err(format!("File path must be absolute: '{}'.", path));
+        return Err(format!("file path must be absolute: '{}'.", path));
     }
     Ok(())
 }
 
+// checks that the vm generation is either 1 or 2.
 pub fn validate_generation(gen: u8) -> Result<(), String> {
     match gen {
         1 | 2 => Ok(()),
@@ -52,6 +60,7 @@ pub fn validate_generation(gen: u8) -> Result<(), String> {
     }
 }
 
+// checks that the cpu count is within a valid range (1 to 64).
 pub fn validate_cpu_count(count: u32) -> Result<(), String> {
     if count == 0 || count > 64 {
         return Err(format!("cpu count out of range: {}", count));
@@ -59,6 +68,7 @@ pub fn validate_cpu_count(count: u32) -> Result<(), String> {
     Ok(())
 }
 
+// checks that the memory bytes are above a minimum and below a maximum value.
 pub fn validate_memory_bytes(bytes: u64) -> Result<(), String> {
     if bytes < 512_000_000 {
         return Err(format!(
@@ -75,6 +85,7 @@ pub fn validate_memory_bytes(bytes: u64) -> Result<(), String> {
     Ok(())
 }
 
+// validates the hyper-v command by calling the appropriate validation function for each command type.
 pub fn validate_command(cmd: &HyperVCommand) -> Result<(), String> {
     match cmd {
         HyperVCommand::CreateVm {
@@ -131,7 +142,7 @@ pub fn validate_command(cmd: &HyperVCommand) -> Result<(), String> {
             controller_location,
         } => {
             validate_vm_name(vm_name)?;
-            if !["IDE", "SCSI"].contains(&controller_type.as_str()) {
+            if !["ide", "scsi"].contains(&controller_type.to_lowercase().as_str()) {
                 return Err(format!("invalid controller type: {}", controller_type));
             }
             if *controller_number > 3 {
@@ -144,7 +155,11 @@ pub fn validate_command(cmd: &HyperVCommand) -> Result<(), String> {
         }
         HyperVCommand::AttachIso { vm_name, iso_path } => {
             validate_vm_name(vm_name)?;
-            validate_file_path(iso_path)
+            let p = Path::new(iso_path);
+            if p.is_absolute() {
+                validate_file_path(iso_path)?;
+            }
+            Ok(())
         }
         HyperVCommand::StartVm { vm_name }
         | HyperVCommand::StopVm { vm_name }

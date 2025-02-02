@@ -1,4 +1,6 @@
-// api.rs
+// this file defines the endpoints for the hyper-v web agent.
+// endpoints include executing commands, retrieving vm status/info and listing iso files.
+
 use actix_web::{get, post, web, HttpResponse, Responder};
 use serde_json;
 use crate::commands::{CommandRequest, HyperVCommand};
@@ -10,6 +12,8 @@ use std::fs;
 use std::path::Path;
 
 #[post("/execute")]
+// receives a json payload with a hyper-v command, validates it, runs the corresponding powershell script,
+// and returns the output or an error message.
 async fn execute_command(
     req: web::Json<CommandRequest>,
     data: web::Data<AgentConfig>,
@@ -34,12 +38,12 @@ async fn execute_command(
             vhd_size_bytes,
         } => {
             let create_cmd = format!(
-                "New-VM -Name \"{}\" -MemoryStartupBytes {} -Generation {}",
+                "new-vm -name \"{}\" -memorystartupbytes {} -generation {}",
                 vm_name, memory_bytes, generation
             );
             let connect_cmd = if config.ethernet_switch.to_lowercase() != "none" {
                 format!(
-                    "Connect-VMNetworkAdapter -VMName \"{}\" -SwitchName '{}'",
+                    "connect-vmnetworkadapter -vmname \"{}\" -switchname '{}'",
                     vm_name, config.ethernet_switch
                 )
             } else {
@@ -47,7 +51,7 @@ async fn execute_command(
             };
             let cpu_cmd = if let Some(c) = cpu_count {
                 if *c > 1 {
-                    format!("Set-VMProcessor -VMName \"{}\" -Count {}", vm_name, c)
+                    format!("set-vmprocessor -vmname \"{}\" -count {}", vm_name, c)
                 } else {
                     "".to_string()
                 }
@@ -60,11 +64,11 @@ async fn execute_command(
                 format!("{}\\{}.vhdx", config.default_vhd_directory, vm_name)
             };
             let disk_create_cmd = format!(
-                "New-VHD -Path \"{}\" -SizeBytes {} -Dynamic",
+                "new-vhd -path \"{}\" -sizebytes {} -dynamic",
                 final_vhd_path, vhd_size_bytes
             );
             let disk_attach_cmd = format!(
-                "Add-VMHardDiskDrive -VMName \"{}\" -Path \"{}\"",
+                "add-vmharddiskdrive -vmname \"{}\" -path \"{}\"",
                 vm_name, final_vhd_path
             );
             let full_script = format!(
@@ -78,36 +82,36 @@ async fn execute_command(
             run_powershell(&full_script)
         }
         HyperVCommand::SetVmProcessor { vm_name, cpu_count } => run_powershell(&format!(
-            "Set-VMProcessor -VMName \"{}\" -Count {}",
+            "set-vmprocessor -vmname \"{}\" -count { }",
             vm_name, cpu_count
         )),
         HyperVCommand::SetStaticMac {
             vm_name,
             mac_address,
         } => run_powershell(&format!(
-            "Set-VMNetworkAdapter -VMName \"{}\" -StaticMacAddress {}",
+            "set-vmnetworkadapter -vmname \"{}\" -staticmacaddress {}",
             vm_name, mac_address
         )),
         HyperVCommand::EnableDynamicMemory { vm_name } => run_powershell(&format!(
-            "Set-VMMemory -VMName \"{}\" -DynamicMemoryEnabled $true",
+            "set-vmmemory -vmname \"{}\" -dynamicmemoryenabled $true",
             vm_name
         )),
         HyperVCommand::DisableDynamicMemory { vm_name } => run_powershell(&format!(
-            "Set-VMMemory -VMName \"{}\" -DynamicMemoryEnabled $false",
+            "set-vmmemory -vmname \"{}\" -dynamicmemoryenabled $false",
             vm_name
         )),
         HyperVCommand::CreateVhd {
             file_path,
             size_bytes,
         } => run_powershell(&format!(
-            "New-VHD -Path \"{}\" -SizeBytes {} -Dynamic",
+            "new-vhd -path \"{}\" -sizebytes {} -dynamic",
             file_path, size_bytes
         )),
         HyperVCommand::AttachVhd {
             vm_name,
             file_path,
         } => run_powershell(&format!(
-            "Add-VMHardDiskDrive -VMName \"{}\" -Path \"{}\"",
+            "add-vmharddiskdrive -vmname \"{}\" -path \"{}\"",
             vm_name, file_path
         )),
         HyperVCommand::DetachVhd {
@@ -116,75 +120,90 @@ async fn execute_command(
             controller_number,
             controller_location,
         } => run_powershell(&format!(
-            "Remove-VMHardDiskDrive -VMName \"{}\" -ControllerType {} -ControllerNumber {} -ControllerLocation {}",
+            "remove-vmharddiskdrive -vmname \"{}\" -controllertype {} -controllernumber {} -controllerlocation {}",
             vm_name, controller_type, controller_number, controller_location
         )),
-        HyperVCommand::AttachIso { vm_name, iso_path } => run_powershell(&format!(
-            "Add-VMDvdDrive -VMName \"{}\" -Path \"{}\"",
-            vm_name, iso_path
-        )),
+        HyperVCommand::AttachIso { vm_name, iso_path } => {
+            let iso_path_obj = Path::new(iso_path);
+            let final_iso_path = if iso_path_obj.is_absolute() {
+                iso_path.to_string()
+            } else {
+                format!("{}\\{}", config.iso_directory, iso_path)
+            };
+            run_powershell(&format!(
+                "add-vmdvddrive -vmname \"{}\" -path \"{}\"",
+                vm_name, final_iso_path
+            ))
+        }
         HyperVCommand::StartVm { vm_name } => {
-            run_powershell(&format!("Start-VM -Name \"{}\"", vm_name))
+            run_powershell(&format!("start-vm -name \"{}\"", vm_name))
         }
         HyperVCommand::StopVm { vm_name } => {
-            run_powershell(&format!("Stop-VM -Name \"{}\" -TurnOff", vm_name))
+            run_powershell(&format!("stop-vm -name \"{}\" -turnoff", vm_name))
         }
         HyperVCommand::RebootVm { vm_name } => {
-            run_powershell(&format!("Restart-VM -Name \"{}\"", vm_name))
+            run_powershell(&format!("restart-vm -name \"{}\"", vm_name))
         }
         HyperVCommand::DeleteVm { vm_name } => {
-            run_powershell(&format!("Remove-VM -Name \"{}\" -Force", vm_name))
+            run_powershell(&format!("remove-vm -name \"{}\" -force", vm_name))
         }
         HyperVCommand::SetStartupMemory {
             vm_name,
             memory_bytes,
         } => run_powershell(&format!(
-            "Set-VMMemory -VMName \"{}\" -StartupBytes {}",
+            "set-vmmemory -vmname \"{}\" -startupbytes {}",
             vm_name, memory_bytes
         )),
         HyperVCommand::CreateCheckpoint {
             vm_name,
             checkpoint_name,
         } => run_powershell(&format!(
-            "Checkpoint-VM -Name \"{}\" -SnapshotName \"{}\"",
+            "checkpoint-vm -name \"{}\" -snapshotname \"{}\"",
             vm_name, checkpoint_name
         )),
-        HyperVCommand::RevertCheckpoint {
-            vm_name,
-            checkpoint_name,
-        } => run_powershell(&format!(
-            "Restore-VMCheckpoint -VMName \"{}\" -Name \"{}\"",
-            vm_name, checkpoint_name
-        )),
+        HyperVCommand::RevertCheckpoint { vm_name, checkpoint_name } => {
+            run_powershell(&format!(
+                "restore-vmcheckpoint -vmname \"{}\" -name \"{}\" -confirm:$false",
+                vm_name, checkpoint_name
+            ))
+        }
         HyperVCommand::RemoveCheckpoint {
             vm_name,
             checkpoint_name,
         } => run_powershell(&format!(
-            "Remove-VMCheckpoint -VMName \"{}\" -Name \"{}\" -Confirm:$false",
+            "remove-vmcheckpoint -vmname \"{}\" -name \"{}\" -confirm:$false",
             vm_name, checkpoint_name
         )),
         HyperVCommand::ListCheckpoints { vm_name } => {
-            run_powershell(&format!("Get-VMCheckpoint -VMName \"{}\"", vm_name))
+            let script = format!("
+        $checkpoints = get-vmcheckpoint -vmname \"{}\";
+        if ($checkpoints -is [array]) {{
+            $checkpoints | select-object name, creationtime | convertto-json -compress
+        }} else {{
+            @($checkpoints | select-object name, creationtime) | convertto-json -compress
+        }}
+    ", vm_name);
+            run_powershell(&script)
         }
         HyperVCommand::GetVmInfo { vm_name } => {
-            run_powershell(&format!("Get-VM -Name \"{}\"", vm_name))
+            run_powershell(&format!("get-vm -name \"{}\"", vm_name))
         }
         HyperVCommand::GetVmMemory { vm_name } => {
-            run_powershell(&format!("Get-VMMemory -VMName \"{}\"", vm_name))
+            run_powershell(&format!("get-vmmemory -vmname \"{}\"", vm_name))
         }
         HyperVCommand::RenameVm {
             old_vm_name,
             new_vm_name,
         } => run_powershell(&format!(
-            "Rename-VM -VMName \"{}\" -NewName \"{}\"",
+            "rename-vm -vmname \"{}\" -newname \"{}\"",
             old_vm_name, new_vm_name
         )),
         HyperVCommand::ExportVm {
             vm_name,
             export_path,
-        } => run_powershell(&format!("Export-VM -Name \"{}\" -Path \"{}\"", vm_name, export_path)),
+        } => run_powershell(&format!("export-vm -name \"{}\" -path \"{}\"", vm_name, export_path)),
         HyperVCommand::TestCommand { message } => {
-            run_powershell(&format!("Write-Output 'Test command says: {}'", message))
+            run_powershell(&format!("write-output 'test command says: {}'", message))
         }
     };
 
@@ -203,35 +222,36 @@ async fn execute_command(
 }
 
 #[get("/vmstatus")]
+// retrieves the status of vms by running a powershell script and returns the output as json.
 async fn get_vmstatus() -> impl Responder {
     log_message("get /vmstatus called.");
 
     let script = r#"
-        $vms = Get-VM | Select-Object Name,State,CPUUsage,MemoryAssigned,Id
+        $vms = get-vm | select-object name,state,cpuusage,memoryassigned,id
         if ($vms) {
             if ($vms -isnot [array]) { $vms = @($vms) }
-            $vms = $vms | ForEach-Object {
-                $_.Id = $_.Id.Guid.ToString()
+            $vms = $vms | foreach-object {
+                $_.id = $_.id.guid.tostring()
                 $_
             }
-            $jsonOutput = $vms | ConvertTo-Json -Depth 3 -Compress
-            Write-Output "[$jsonOutput]"
+            $jsonoutput = $vms | convertto-json -depth 3 -compress
+            write-output "[$jsonoutput]"
         } else {
-            Write-Output "[]"
+            write-output "[]"
         }
     "#;
 
     match run_powershell(script) {
         Ok(raw_output) => {
             let trimmed = raw_output.trim();
-            if trimmed == "No VMs found." {
+            if trimmed == "no vms found." {
                 HttpResponse::Ok().body(trimmed.to_string())
             } else {
                 match serde_json::from_str::<serde_json::Value>(trimmed) {
                     Ok(json_val) => HttpResponse::Ok().json(json_val),
                     Err(e) => {
                         let msg = format!(
-                            "Could not parse VM data as JSON.\nRaw output:\n{}\nError:\n{}",
+                            "could not parse vm data as json.\nraw output:\n{}\nerror:\n{}",
                             raw_output, e
                         );
                         log_message(&msg);
@@ -241,7 +261,7 @@ async fn get_vmstatus() -> impl Responder {
             }
         }
         Err(e) => {
-            let msg = format!("Error retrieving VM status: {}", e);
+            let msg = format!("error retrieving vm status: {}", e);
             log_message(&msg);
             HttpResponse::InternalServerError().body(msg)
         }
@@ -249,17 +269,18 @@ async fn get_vmstatus() -> impl Responder {
 }
 
 #[get("/vminfo")]
+// retrieves detailed info about the vms by running a powershell script and returns the output as json.
 async fn vminfo() -> impl Responder {
     log_message("get /vminfo called.");
 
     let script = r#"
-        $vms = Get-VM
+        $vms = get-vm
         if ($vms) {
             if ($vms -isnot [array]) { $vms = @($vms) }
-            $jsonOutput = $vms | ConvertTo-Json -Depth 5 -Compress
-            Write-Output $jsonOutput
+            $jsonoutput = $vms | convertto-json -depth 5 -compress
+            write-output $jsonoutput
         } else {
-            Write-Output "[]"
+            write-output "[]"
         }
     "#;
 
@@ -270,7 +291,7 @@ async fn vminfo() -> impl Responder {
                 Ok(json_val) => HttpResponse::Ok().json(json_val),
                 Err(e) => {
                     let msg = format!(
-                        "Could not parse VM info data as JSON.\nRaw output:\n{}\nError:\n{}",
+                        "could not parse vm info data as json.\nraw output:\n{}\nerror:\n{}",
                         raw_output, e
                     );
                     log_message(&msg);
@@ -279,7 +300,7 @@ async fn vminfo() -> impl Responder {
             }
         }
         Err(e) => {
-            let msg = format!("Error retrieving VM info: {}", e);
+            let msg = format!("error retrieving vm info: {}", e);
             log_message(&msg);
             HttpResponse::InternalServerError().body(msg)
         }
@@ -287,13 +308,14 @@ async fn vminfo() -> impl Responder {
 }
 
 #[get("/listisos")]
+// reads the configured iso directory and returns a json array of iso filenames.
 async fn list_isos(data: web::Data<crate::config::AgentConfig>) -> impl Responder {
-    log_message("GET /listisos called.");
+    log_message("get /listisos called.");
     let config = data.as_ref();
-    let path = Path::new(&config.iso_directory);
+    let path = std::path::Path::new(&config.iso_directory);
 
     if !path.exists() {
-        let msg = format!("ISO directory '{}' does not exist.", &config.iso_directory);
+        let msg = format!("iso directory '{}' does not exist.", &config.iso_directory);
         log_message(&msg);
         return HttpResponse::BadRequest().body(msg);
     }
@@ -312,14 +334,14 @@ async fn list_isos(data: web::Data<crate::config::AgentConfig>) -> impl Responde
             HttpResponse::Ok().json(iso_files)
         }
         Err(e) => {
-            let msg = format!("Error reading ISO directory: {}", e);
+            let msg = format!("error reading iso directory: {}", e);
             log_message(&msg);
             HttpResponse::InternalServerError().body(msg)
         }
     }
 }
 
-/// Configure all routes for the application.
+// registers all the endpoints for the application.
 pub fn init_routes(cfg: &mut web::ServiceConfig) {
     cfg.service(execute_command);
     cfg.service(get_vmstatus);

@@ -1,8 +1,10 @@
-// allowed_hosts_middleware.rs
+// this file implements a middleware that checks if the incoming request comes from an allowed host.
+// it compares the client's ip with a list of allowed hosts and returns a forbidden response if not allowed.
+
+use actix_web::body::{BoxBody, EitherBody};
 use actix_web::dev::{Service, ServiceRequest, ServiceResponse, Transform};
 use actix_web::{Error, HttpResponse};
-use actix_web::body::{BoxBody, EitherBody};
-use futures_util::future::{ok, Ready, LocalBoxFuture};
+use futures_util::future::{ok, LocalBoxFuture, Ready};
 use std::net::IpAddr;
 use std::net::ToSocketAddrs;
 use std::sync::Arc;
@@ -13,7 +15,8 @@ pub struct AllowedHostsMiddleware {
 
 impl<S> Transform<S, ServiceRequest> for AllowedHostsMiddleware
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<EitherBody<BoxBody>>, Error = Error> + 'static,
+    S: Service<ServiceRequest, Response = ServiceResponse<EitherBody<BoxBody>>, Error = Error>
+        + 'static,
 {
     type Response = ServiceResponse<EitherBody<BoxBody>>;
     type Error = Error;
@@ -21,6 +24,7 @@ where
     type InitError = ();
     type Future = Ready<Result<Self::Transform, Self::InitError>>;
 
+    // creates a new middleware service instance wrapping the inner service
     fn new_transform(&self, service: S) -> Self::Future {
         ok(AllowedHostsMiddlewareService {
             service: Arc::new(service),
@@ -36,19 +40,22 @@ pub struct AllowedHostsMiddlewareService<S> {
 
 impl<S> Service<ServiceRequest> for AllowedHostsMiddlewareService<S>
 where
-    S: Service<ServiceRequest, Response = ServiceResponse<EitherBody<BoxBody>>, Error = Error> + 'static,
+    S: Service<ServiceRequest, Response = ServiceResponse<EitherBody<BoxBody>>, Error = Error>
+        + 'static,
 {
     type Response = ServiceResponse<EitherBody<BoxBody>>;
     type Error = Error;
     type Future = LocalBoxFuture<'static, Result<Self::Response, Self::Error>>;
 
+    // checks if the inner service is ready to process the request
     fn poll_ready(
         &self,
-        cx: &mut std::task::Context<'_>
+        cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Result<(), Self::Error>> {
         self.service.poll_ready(cx)
     }
 
+    // intercepts each request to check if the client's ip is allowed
     fn call(&self, req: ServiceRequest) -> Self::Future {
         if self.allowed_hosts.is_empty() {
             let fut = self.service.call(req);
@@ -81,16 +88,15 @@ where
                 }
             }
             if !allowed {
-                let response = HttpResponse::Forbidden().body("Access denied: host not allowed");
-                return Box::pin(async move {
-                    Ok(req.into_response(response.map_into_right_body()))
-                });
+                let response = HttpResponse::Forbidden().body("access denied: host not allowed");
+                return Box::pin(
+                    async move { Ok(req.into_response(response.map_into_right_body())) },
+                );
             }
         } else {
-            let response = HttpResponse::Forbidden().body("Access denied: could not determine remote address");
-            return Box::pin(async move {
-                Ok(req.into_response(response.map_into_right_body()))
-            });
+            let response =
+                HttpResponse::Forbidden().body("access denied: could not determine remote address");
+            return Box::pin(async move { Ok(req.into_response(response.map_into_right_body())) });
         }
         let fut = self.service.call(req);
         Box::pin(async move {

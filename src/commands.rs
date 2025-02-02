@@ -1,3 +1,5 @@
+// this enum defines all supported hyper-v commands
+
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -93,6 +95,7 @@ pub enum HyperVCommand {
     },
 }
 
+// the command request struct wraps a hyper-v command for processing in api endpoints
 #[derive(Debug, Deserialize)]
 pub struct CommandRequest {
     pub command: HyperVCommand,

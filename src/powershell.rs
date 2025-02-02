@@ -1,3 +1,5 @@
+// this file provides a function to run a powershell script and capture its output.
+
 use crate::logging::log_message;
 use std::process::Command;
 

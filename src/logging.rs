@@ -1,3 +1,5 @@
+// this file provides a simple function to log messages to a log file in the same directory as the executable.
+
 use std::io::Write;
 
 pub fn log_message(msg: &str) {
